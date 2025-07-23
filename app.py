@@ -44,7 +44,7 @@ def main():
         timeout_seconds = st.slider("Request timeout (seconds)", 5, 30, 10)
     
     # Main interface tabs
-    tab1, tab2, tab3 = st.tabs(["🕷️ Email Scraping", "✅ Email Validation", "📊 Results & Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🕷️ Email Scraping", "📦 Bulk Operations", "✅ Email Validation", "📊 Results & Export"])
     
     # Email Scraping Tab
     with tab1:
@@ -108,8 +108,257 @@ def main():
             else:
                 st.error("Please enter a valid URL.")
     
-    # Email Validation Tab
+    # Bulk Operations Tab
     with tab2:
+        st.header("Bulk Email Operations")
+        
+        # Bulk Scraping Section
+        st.subheader("📋 Bulk Website Scraping")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # URL input methods
+            url_input_method = st.radio(
+                "Choose input method:",
+                ["Text area", "Upload file"],
+                horizontal=True
+            )
+            
+            if url_input_method == "Text area":
+                bulk_urls = st.text_area(
+                    "Enter website URLs (one per line):",
+                    placeholder="https://example1.com\nhttps://example2.com\nhttps://example3.com",
+                    height=150,
+                    help="Enter up to 50 URLs, one per line"
+                )
+                url_list = [url.strip() for url in bulk_urls.split('\n') if url.strip()]
+            else:
+                uploaded_urls_file = st.file_uploader(
+                    "Upload CSV file with URLs:",
+                    type=['csv', 'txt'],
+                    help="CSV file should have a 'url' column, or text file with one URL per line"
+                )
+                url_list = []
+                
+                if uploaded_urls_file is not None:
+                    try:
+                        if uploaded_urls_file.name.endswith('.csv'):
+                            df_urls = pd.read_csv(uploaded_urls_file)
+                            if 'url' in df_urls.columns:
+                                url_list = df_urls['url'].dropna().astype(str).tolist()
+                            else:
+                                st.error("CSV file must contain a 'url' column.")
+                        else:
+                            # Text file
+                            content = uploaded_urls_file.read().decode('utf-8')
+                            url_list = [url.strip() for url in content.split('\n') if url.strip()]
+                        
+                        if url_list:
+                            st.success(f"Loaded {len(url_list)} URLs from file!")
+                    except Exception as e:
+                        st.error(f"Error reading file: {str(e)}")
+        
+        with col2:
+            st.write("**Bulk Scraping Info**")
+            if url_list:
+                st.metric("URLs to Process", len(url_list))
+                if len(url_list) > 50:
+                    st.warning("⚠️ Limiting to first 50 URLs for performance")
+                    url_list = url_list[:50]
+                
+                # Estimate processing time
+                estimated_time = len(url_list) * (delay_between_requests + 2)  # 2 seconds base time per URL
+                if estimated_time < 60:
+                    st.metric("Estimated Time", f"{estimated_time:.0f} seconds")
+                else:
+                    st.metric("Estimated Time", f"{estimated_time/60:.1f} minutes")
+        
+        # Bulk scraping controls
+        if url_list:
+            bulk_scrape_options = st.multiselect(
+                "Scraping Sources for All URLs:",
+                ["Main content", "Contact pages", "About pages", "Footer"],
+                default=["Main content", "Contact pages"]
+            )
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("🚀 Start Bulk Scraping", disabled=st.session_state.scraping_in_progress):
+                    st.session_state.scraping_in_progress = True
+                    
+                    # Progress tracking
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    results_container = st.empty()
+                    
+                    all_bulk_emails = []
+                    processed_count = 0
+                    
+                    try:
+                        scraper = EmailScraper(delay=delay_between_requests, max_pages=3)  # Limit pages for bulk
+                        
+                        for i, url in enumerate(url_list):
+                            status_text.text(f"Processing {i+1}/{len(url_list)}: {url}")
+                            
+                            try:
+                                emails = scraper.scrape_website(url, bulk_scrape_options)
+                                all_bulk_emails.extend(emails)
+                                processed_count += 1
+                                
+                                # Update progress
+                                progress_bar.progress((i + 1) / len(url_list))
+                                
+                                # Show interim results
+                                with results_container.container():
+                                    st.write(f"**Progress:** {processed_count}/{len(url_list)} URLs processed")
+                                    st.write(f"**Total Emails Found:** {len(set(all_bulk_emails))}")
+                                    
+                            except Exception as e:
+                                st.warning(f"Failed to scrape {url}: {str(e)}")
+                            
+                            # Rate limiting between URLs
+                            if i < len(url_list) - 1:
+                                time.sleep(delay_between_requests)
+                        
+                        # Remove duplicates and update session
+                        unique_emails = list(set(all_bulk_emails))
+                        st.session_state.scraped_emails = unique_emails
+                        
+                        st.success(f"✅ Bulk scraping completed! Found {len(unique_emails)} unique emails from {processed_count} websites.")
+                        
+                        # Show summary
+                        if unique_emails:
+                            domains = set([email.split('@')[1] for email in unique_emails if '@' in email])
+                            st.info(f"📊 Summary: {len(unique_emails)} emails from {len(domains)} different domains")
+                            
+                    except Exception as e:
+                        st.error(f"Bulk scraping error: {str(e)}")
+                    
+                    finally:
+                        st.session_state.scraping_in_progress = False
+                        progress_bar.empty()
+                        status_text.empty()
+                        st.rerun()
+            
+            with col2:
+                if st.button("📋 Preview URLs"):
+                    with st.expander("URLs to be processed:", expanded=True):
+                        for i, url in enumerate(url_list[:10], 1):
+                            st.write(f"{i}. {url}")
+                        if len(url_list) > 10:
+                            st.write(f"... and {len(url_list) - 10} more URLs")
+            
+            with col3:
+                if st.button("🔄 Clear URLs"):
+                    st.rerun()
+        
+        st.divider()
+        
+        # Bulk Email Import Section
+        st.subheader("📥 Bulk Email Import")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Email input methods
+            email_input_method = st.radio(
+                "Choose email input method:",
+                ["Text area", "Upload CSV file"],
+                horizontal=True,
+                key="email_input_method"
+            )
+            
+            if email_input_method == "Text area":
+                bulk_emails_text = st.text_area(
+                    "Enter email addresses (one per line):",
+                    placeholder="user1@example.com\nuser2@company.com\ncontact@business.org",
+                    height=150,
+                    help="Enter up to 1000 email addresses, one per line"
+                )
+                email_list = [email.strip() for email in bulk_emails_text.split('\n') if email.strip() and '@' in email]
+            else:
+                uploaded_emails_file = st.file_uploader(
+                    "Upload CSV file with email addresses:",
+                    type=['csv'],
+                    help="CSV file should have an 'email' column",
+                    key="bulk_email_upload"
+                )
+                email_list = []
+                
+                if uploaded_emails_file is not None:
+                    try:
+                        df_emails = pd.read_csv(uploaded_emails_file)
+                        if 'email' in df_emails.columns:
+                            email_list = df_emails['email'].dropna().astype(str).tolist()
+                            email_list = [email.strip() for email in email_list if '@' in email]
+                        else:
+                            st.error("CSV file must contain an 'email' column.")
+                        
+                        if email_list:
+                            st.success(f"Loaded {len(email_list)} emails from file!")
+                    except Exception as e:
+                        st.error(f"Error reading file: {str(e)}")
+        
+        with col2:
+            st.write("**Bulk Import Info**")
+            if email_list:
+                st.metric("Emails to Import", len(email_list))
+                if len(email_list) > 1000:
+                    st.warning("⚠️ Limiting to first 1000 emails")
+                    email_list = email_list[:1000]
+                
+                unique_emails = len(set(email_list))
+                if unique_emails != len(email_list):
+                    st.metric("Unique Emails", unique_emails)
+        
+        # Bulk import controls
+        if email_list:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("📥 Import Emails"):
+                    # Clean and deduplicate emails
+                    from utils import clean_email_list
+                    cleaned_emails = clean_email_list(email_list)
+                    
+                    # Add to session or replace
+                    import_mode = st.radio(
+                        "Import mode:",
+                        ["Add to existing", "Replace existing"],
+                        key="import_mode"
+                    )
+                    
+                    if import_mode == "Add to existing":
+                        existing_emails = set(st.session_state.scraped_emails)
+                        new_emails = [email for email in cleaned_emails if email not in existing_emails]
+                        st.session_state.scraped_emails.extend(new_emails)
+                        st.success(f"✅ Added {len(new_emails)} new emails! Total: {len(st.session_state.scraped_emails)}")
+                    else:
+                        st.session_state.scraped_emails = cleaned_emails
+                        st.success(f"✅ Imported {len(cleaned_emails)} emails!")
+                    
+                    st.rerun()
+            
+            with col2:
+                if st.button("👀 Preview Emails"):
+                    with st.expander("Email addresses to be imported:", expanded=True):
+                        for i, email in enumerate(email_list[:20], 1):
+                            st.write(f"{i}. {email}")
+                        if len(email_list) > 20:
+                            st.write(f"... and {len(email_list) - 20} more emails")
+            
+            with col3:
+                if st.button("🧹 Clean & Deduplicate"):
+                    from utils import clean_email_list
+                    cleaned = clean_email_list(email_list)
+                    st.info(f"Original: {len(email_list)} emails")
+                    st.info(f"After cleaning: {len(cleaned)} emails")
+                    st.info(f"Removed: {len(email_list) - len(cleaned)} duplicates/invalid")
+    
+    # Email Validation Tab
+    with tab3:
         st.header("Validate Email Addresses")
         
         if not st.session_state.scraped_emails:
@@ -134,7 +383,13 @@ def main():
                     st.error(f"Error reading file: {str(e)}")
         
         if st.session_state.scraped_emails:
-            st.write(f"**{len(st.session_state.scraped_emails)} emails ready for validation**")
+            email_count = len(st.session_state.scraped_emails)
+            st.write(f"**{email_count} emails ready for validation**")
+            
+            # Show processing time estimate
+            from utils import estimate_processing_time
+            est_time = estimate_processing_time(email_count, enable_smtp_check)
+            st.info(f"⏱️ Estimated processing time: {est_time}")
             
             # Validation stages info
             with st.expander("📋 Validation Process Details"):
@@ -156,54 +411,158 @@ def main():
                 - Verifies if email address exists
                 """)
             
-            col1, col2 = st.columns(2)
+            # Bulk validation controls
+            col1, col2, col3 = st.columns(3)
+            
             with col1:
-                if st.button("🔍 Validate All Emails", disabled=st.session_state.validation_in_progress):
-                    st.session_state.validation_in_progress = True
-                    
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    try:
-                        validator = EmailValidator(
-                            enable_smtp=enable_smtp_check,
-                            timeout=timeout_seconds
-                        )
-                        
-                        validated_results = []
-                        total_emails = len(st.session_state.scraped_emails)
-                        
-                        for i, email in enumerate(st.session_state.scraped_emails):
-                            status_text.text(f"Validating: {email}")
-                            
-                            result = validator.validate_email(email)
-                            validated_results.append(result)
-                            
-                            progress_bar.progress((i + 1) / total_emails)
-                            
-                            # Rate limiting
-                            if i < total_emails - 1:
-                                time.sleep(delay_between_requests)
-                        
-                        st.session_state.validated_emails = validated_results
-                        st.success("✅ Email validation completed!")
-                        
-                    except Exception as e:
-                        st.error(f"Validation error: {str(e)}")
-                    
-                    finally:
-                        st.session_state.validation_in_progress = False
-                        progress_bar.empty()
-                        status_text.empty()
-                        st.rerun()
+                # Batch size for large datasets
+                if email_count > 100:
+                    batch_size = st.selectbox(
+                        "Batch size:",
+                        [50, 100, 200, 500],
+                        value=100,
+                        help="Process emails in smaller batches to prevent timeouts"
+                    )
+                else:
+                    batch_size = email_count
+                
+                # Validation mode
+                validation_mode = st.selectbox(
+                    "Validation mode:",
+                    ["Complete (all 4 stages)", "Quick (format + DNS only)", "Format only"],
+                    help="Choose validation depth vs speed"
+                )
             
             with col2:
+                # Continue from interruption option
+                if st.session_state.validated_emails:
+                    validated_count = len(st.session_state.validated_emails)
+                    st.metric("Already Validated", f"{validated_count}/{email_count}")
+                    
+                    if validated_count < email_count:
+                        continue_validation = st.checkbox(
+                            "Continue from where left off",
+                            value=True,
+                            help="Resume validation from previously validated emails"
+                        )
+                    else:
+                        continue_validation = False
+                        st.success("All emails already validated!")
+                else:
+                    continue_validation = False
+            
+            with col3:
                 if st.session_state.validated_emails:
                     valid_count = len([r for r in st.session_state.validated_emails if r['is_valid']])
                     st.metric("Valid Emails", f"{valid_count}/{len(st.session_state.validated_emails)}")
+            
+            # Main validation button
+            if st.button("🔍 Start Bulk Validation", disabled=st.session_state.validation_in_progress):
+                st.session_state.validation_in_progress = True
+                
+                # Progress tracking
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                results_container = st.empty()
+                
+                try:
+                    # Configure validator based on mode
+                    if validation_mode == "Format only":
+                        validator = EmailValidator(enable_smtp=False, timeout=timeout_seconds)
+                    elif validation_mode == "Quick (format + DNS only)":
+                        validator = EmailValidator(enable_smtp=False, timeout=timeout_seconds)
+                    else:
+                        validator = EmailValidator(enable_smtp=enable_smtp_check, timeout=timeout_seconds)
+                    
+                    # Determine which emails to validate
+                    if continue_validation and st.session_state.validated_emails:
+                        validated_emails_set = set([r['email'] for r in st.session_state.validated_emails])
+                        emails_to_validate = [email for email in st.session_state.scraped_emails 
+                                            if email not in validated_emails_set]
+                        validated_results = st.session_state.validated_emails.copy()
+                    else:
+                        emails_to_validate = st.session_state.scraped_emails.copy()
+                        validated_results = []
+                    
+                    total_emails = len(emails_to_validate)
+                    processed_count = 0
+                    
+                    # Process in batches
+                    for batch_start in range(0, total_emails, batch_size):
+                        batch_end = min(batch_start + batch_size, total_emails)
+                        batch_emails = emails_to_validate[batch_start:batch_end]
+                        
+                        status_text.text(f"Processing batch {batch_start//batch_size + 1}: emails {batch_start + 1}-{batch_end}")
+                        
+                        for i, email in enumerate(batch_emails):
+                            global_index = batch_start + i
+                            status_text.text(f"Validating {global_index + 1}/{total_emails}: {email}")
+                            
+                            # Quick validation for format-only mode
+                            if validation_mode == "Format only":
+                                result = {
+                                    'email': email,
+                                    'is_valid': validator.validate_format(email),
+                                    'format_valid': validator.validate_format(email),
+                                    'blacklist_check': True,
+                                    'dns_valid': None,
+                                    'smtp_valid': None,
+                                    'error_message': None if validator.validate_format(email) else 'Invalid format'
+                                }
+                            else:
+                                result = validator.validate_email(email)
+                            
+                            validated_results.append(result)
+                            processed_count += 1
+                            
+                            # Update progress
+                            progress_bar.progress(processed_count / total_emails)
+                            
+                            # Show interim results every 10 emails
+                            if processed_count % 10 == 0 or processed_count == total_emails:
+                                with results_container.container():
+                                    valid_so_far = len([r for r in validated_results if r['is_valid']])
+                                    st.write(f"**Progress:** {processed_count}/{total_emails} validated")
+                                    st.write(f"**Valid emails so far:** {valid_so_far}")
+                                    st.write(f"**Success rate:** {(valid_so_far/len(validated_results)*100):.1f}%")
+                            
+                            # Rate limiting
+                            if validation_mode != "Format only" and i < len(batch_emails) - 1:
+                                time.sleep(max(0.1, delay_between_requests / 10))  # Faster for bulk
+                        
+                        # Batch completed message
+                        st.info(f"Batch {batch_start//batch_size + 1} completed")
+                    
+                    # Update session state
+                    st.session_state.validated_emails = validated_results
+                    
+                    # Final summary
+                    valid_count = len([r for r in validated_results if r['is_valid']])
+                    success_rate = (valid_count / len(validated_results)) * 100 if validated_results else 0
+                    
+                    st.success(f"✅ Bulk validation completed!")
+                    st.balloons()
+                    
+                    # Show detailed summary
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Processed", len(validated_results))
+                    with col2:
+                        st.metric("Valid Emails", valid_count)
+                    with col3:
+                        st.metric("Success Rate", f"{success_rate:.1f}%")
+                    
+                except Exception as e:
+                    st.error(f"Validation error: {str(e)}")
+                
+                finally:
+                    st.session_state.validation_in_progress = False
+                    progress_bar.empty()
+                    status_text.empty()
+                    st.rerun()
     
     # Results & Export Tab
-    with tab3:
+    with tab4:
         st.header("Validation Results & Export")
         
         if st.session_state.validated_emails:
@@ -256,43 +615,200 @@ def main():
                 filtered_df = filtered_df[filtered_df['Status'] == "❌ Invalid"]
             
             if domain_filter != "All":
-                filtered_df = filtered_df[filtered_df['Email'].str.contains(f"@{domain_filter}")]
+                filtered_df = filtered_df[filtered_df['Email'].astype(str).str.contains(f"@{domain_filter}")]
             
             st.dataframe(filtered_df, use_container_width=True)
             
-            # Export options
-            st.subheader("Export Options")
-            col1, col2, col3 = st.columns(3)
+            # Advanced Analysis
+            st.subheader("📈 Advanced Analysis")
+            
+            # Generate analysis
+            from utils import format_validation_summary, group_emails_by_domain
+            analysis = format_validation_summary(st.session_state.validated_emails)
+            
+            if analysis:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**Validation Summary**")
+                    st.metric("Success Rate", f"{analysis['valid_percentage']:.1f}%")
+                    st.metric("Format Valid", f"{analysis['format_valid']}/{analysis['total_emails']}")
+                    st.metric("DNS Valid", f"{analysis['dns_valid']}/{analysis['total_emails']}")
+                    st.metric("SMTP Valid", f"{analysis['smtp_valid']}/{analysis['total_emails']}")
+                
+                with col2:
+                    st.write("**Top Domains**")
+                    domain_df = pd.DataFrame(analysis['top_domains'][:5], columns=['Domain', 'Count'])
+                    st.dataframe(domain_df, hide_index=True)
+                    
+                    st.metric("Unique Domains", analysis['unique_domains'])
+                
+                # Error analysis
+                if analysis['error_types']:
+                    st.write("**Common Error Types**")
+                    error_df = pd.DataFrame(list(analysis['error_types'].items()), columns=['Error Type', 'Count'])
+                    error_df = error_df.sort_values('Count', ascending=False)
+                    st.dataframe(error_df, hide_index=True)
+            
+            st.divider()
+            
+            # Bulk Export Options
+            st.subheader("📦 Bulk Export Options")
+            
+            # Export format selection
+            col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("📥 Export All Results"):
-                    csv_data = export_to_csv(st.session_state.validated_emails)
-                    st.download_button(
-                        label="Download CSV",
-                        data=csv_data,
-                        file_name=f"email_validation_results_{int(time.time())}.csv",
-                        mime="text/csv"
-                    )
+                export_format = st.selectbox(
+                    "Export format:",
+                    ["CSV", "Excel (XLSX)", "JSON"],
+                    help="Choose the format for your exported data"
+                )
+                
+                export_scope = st.selectbox(
+                    "Export scope:",
+                    ["All results", "Valid emails only", "Invalid emails only", "By domain"],
+                    help="Choose which emails to include in export"
+                )
             
             with col2:
-                if st.button("📥 Export Valid Only"):
-                    valid_results = [r for r in st.session_state.validated_emails if r['is_valid']]
-                    if valid_results:
-                        csv_data = export_to_csv(valid_results)
+                if export_scope == "By domain":
+                    available_domains = sorted(list(set([email.split('@')[1] for email in df_results['email'] if '@' in email])))
+                    selected_domains = st.multiselect(
+                        "Select domains to export:",
+                        available_domains,
+                        help="Choose specific domains to export"
+                    )
+                
+                include_details = st.checkbox(
+                    "Include validation details",
+                    value=True,
+                    help="Include detailed validation information in export"
+                )
+            
+            # Export buttons
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                if st.button("📥 Export Results"):
+                    # Filter data based on scope
+                    if export_scope == "All results":
+                        export_data = st.session_state.validated_emails
+                    elif export_scope == "Valid emails only":
+                        export_data = [r for r in st.session_state.validated_emails if r['is_valid']]
+                    elif export_scope == "Invalid emails only":
+                        export_data = [r for r in st.session_state.validated_emails if not r['is_valid']]
+                    elif export_scope == "By domain" and 'selected_domains' in locals():
+                        export_data = [r for r in st.session_state.validated_emails 
+                                     if any(domain in r['email'] for domain in selected_domains)]
+                    else:
+                        export_data = st.session_state.validated_emails
+                    
+                    if export_data:
+                        timestamp = int(time.time())
+                        
+                        if export_format == "CSV":
+                            csv_data = export_to_csv(export_data)
+                            st.download_button(
+                                label="Download CSV",
+                                data=csv_data,
+                                file_name=f"email_validation_{export_scope.lower().replace(' ', '_')}_{timestamp}.csv",
+                                mime="text/csv"
+                            )
+                        
+                        elif export_format == "Excel (XLSX)":
+                            # Create Excel file
+                            import io
+                            output = io.BytesIO()
+                            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                export_df = pd.DataFrame(export_data)
+                                export_df.to_excel(writer, sheet_name='Validation Results', index=False)
+                                
+                                # Add summary sheet
+                                if analysis:
+                                    summary_data = {
+                                        'Metric': ['Total Emails', 'Valid Emails', 'Success Rate', 'Unique Domains'],
+                                        'Value': [analysis['total_emails'], analysis['valid_emails'], 
+                                                f"{analysis['valid_percentage']:.1f}%", analysis['unique_domains']]
+                                    }
+                                    summary_df = pd.DataFrame(summary_data)
+                                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                            
+                            st.download_button(
+                                label="Download Excel",
+                                data=output.getvalue(),
+                                file_name=f"email_validation_{export_scope.lower().replace(' ', '_')}_{timestamp}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        
+                        elif export_format == "JSON":
+                            import json
+                            json_data = json.dumps(export_data, indent=2)
+                            st.download_button(
+                                label="Download JSON",
+                                data=json_data,
+                                file_name=f"email_validation_{export_scope.lower().replace(' ', '_')}_{timestamp}.json",
+                                mime="application/json"
+                            )
+                    else:
+                        st.warning("No data to export with current filters.")
+            
+            with col2:
+                if st.button("📧 Export Email List"):
+                    # Simple email list export
+                    if export_scope == "Valid emails only":
+                        email_list = [r['email'] for r in st.session_state.validated_emails if r['is_valid']]
+                    elif export_scope == "Invalid emails only":
+                        email_list = [r['email'] for r in st.session_state.validated_emails if not r['is_valid']]
+                    else:
+                        email_list = [r['email'] for r in st.session_state.validated_emails]
+                    
+                    if email_list:
+                        email_text = '\n'.join(email_list)
                         st.download_button(
-                            label="Download Valid Emails CSV",
-                            data=csv_data,
-                            file_name=f"valid_emails_{int(time.time())}.csv",
+                            label="Download Email List (TXT)",
+                            data=email_text,
+                            file_name=f"email_list_{export_scope.lower().replace(' ', '_')}_{int(time.time())}.txt",
+                            mime="text/plain"
+                        )
+                    else:
+                        st.warning("No emails to export.")
+            
+            with col3:
+                if st.button("📊 Export Analytics"):
+                    if analysis:
+                        # Create analytics CSV
+                        analytics_data = []
+                        analytics_data.append(['Metric', 'Value'])
+                        analytics_data.append(['Total Emails', analysis['total_emails']])
+                        analytics_data.append(['Valid Emails', analysis['valid_emails']])
+                        analytics_data.append(['Success Rate (%)', f"{analysis['valid_percentage']:.1f}"])
+                        analytics_data.append(['Format Valid', analysis['format_valid']])
+                        analytics_data.append(['DNS Valid', analysis['dns_valid']])
+                        analytics_data.append(['SMTP Valid', analysis['smtp_valid']])
+                        analytics_data.append(['Unique Domains', analysis['unique_domains']])
+                        analytics_data.append(['', ''])
+                        analytics_data.append(['Top Domains', 'Count'])
+                        
+                        for domain, count in analysis['top_domains'][:10]:
+                            analytics_data.append([domain, count])
+                        
+                        analytics_csv = '\n'.join([','.join(map(str, row)) for row in analytics_data])
+                        
+                        st.download_button(
+                            label="Download Analytics CSV",
+                            data=analytics_csv,
+                            file_name=f"email_analytics_{int(time.time())}.csv",
                             mime="text/csv"
                         )
                     else:
-                        st.warning("No valid emails to export.")
+                        st.warning("No analytics data available.")
             
-            with col3:
-                if st.button("🔄 Clear Results"):
+            with col4:
+                if st.button("🔄 Clear All Data"):
                     st.session_state.scraped_emails = []
                     st.session_state.validated_emails = []
-                    st.success("Results cleared!")
+                    st.success("All data cleared!")
                     st.rerun()
         
         else:

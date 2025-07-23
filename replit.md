@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a Python-based web application built with Streamlit that provides comprehensive email scraping and validation capabilities. The application allows users to extract email addresses from websites and validate them using multiple verification methods including format validation, DNS checking, and SMTP verification.
+This is a Python-based web application built with Streamlit that provides comprehensive email scraping and validation capabilities with bulk processing support. The application allows users to extract email addresses from websites, import large email lists (up to 1000 emails), and validate them using a 4-stage verification process including format validation, blacklist checking, DNS verification, and SMTP testing.
 
 ## User Preferences
 
@@ -14,9 +14,10 @@ The application follows a modular architecture with clear separation of concerns
 
 ### Frontend Architecture
 - **Streamlit-based UI**: Web interface built with Streamlit providing an interactive dashboard
-- **Multi-tab interface**: Organized into three main sections - Email Scraping, Email Validation, and Results & Export
-- **Real-time feedback**: Progress indicators and session state management for user interaction
+- **Multi-tab interface**: Organized into four main sections - Email Scraping, Bulk Operations, Email Validation, and Results & Export
+- **Real-time feedback**: Progress indicators, batch processing updates, and session state management for user interaction
 - **Sidebar configuration**: Centralized settings panel for rate limiting and validation options
+- **Bulk processing interface**: Dedicated tab for handling large-scale operations with progress tracking
 
 ### Backend Architecture
 - **Modular Python components**: Separate classes for scraping (`EmailScraper`) and validation (`EmailValidator`)
@@ -48,18 +49,21 @@ The application follows a modular architecture with clear separation of concerns
 - **Rate Limiting**: Decorator for controlling request frequency
 
 ### 4. Main Application (app.py)
-- **Streamlit interface**: Multi-tab UI with configuration sidebar
+- **Streamlit interface**: Four-tab UI with configuration sidebar
 - **Session state management**: Persistent data storage across user sessions
 - **Progress tracking**: Real-time status updates during scraping/validation operations
+- **Bulk processing**: Support for processing up to 1000 emails with batch management
+- **Advanced export**: Multiple export formats (CSV, Excel, JSON) with filtering options
 
 ## Data Flow
 
-1. **User Input**: User provides website URLs and configuration settings
-2. **Email Scraping**: EmailScraper crawls specified websites and extracts email addresses
-3. **Data Storage**: Scraped emails stored in Streamlit session state
-4. **Email Validation**: EmailValidator processes scraped emails through multiple validation layers
-5. **Results Display**: Validated results presented in tabular format with export options
-6. **Data Export**: Results can be exported as CSV files for external use
+1. **User Input**: User provides website URLs, bulk email lists, or uploads files with configuration settings
+2. **Bulk Processing**: Support for multiple input methods including text area input, CSV uploads, and URL lists
+3. **Email Scraping**: EmailScraper crawls specified websites and extracts email addresses with batch processing for multiple URLs
+4. **Data Storage**: Scraped emails stored in Streamlit session state with deduplication
+5. **Email Validation**: EmailValidator processes emails through 4-stage validation with batch support and resume capability
+6. **Results Analysis**: Advanced analytics including domain analysis, error categorization, and success rate tracking
+7. **Bulk Export**: Results can be exported in multiple formats (CSV, Excel, JSON) with filtering and scope options
 
 ## External Dependencies
 
@@ -70,6 +74,7 @@ The application follows a modular architecture with clear separation of concerns
 - **Trafilatura**: Advanced web content extraction
 - **pandas**: Data manipulation and analysis
 - **dnspython**: DNS resolution for MX record validation
+- **openpyxl**: Excel file generation for advanced export options
 
 ### Network Services
 - **DNS Servers**: For MX record validation
@@ -115,4 +120,16 @@ The application follows a modular architecture with clear separation of concerns
    - **Pros**: Ethical scraping, reduced server load
    - **Cons**: Slower data collection
 
-The application is designed for single-user scenarios with temporary data storage, making it suitable for desktop deployment or small-scale cloud hosting without requiring database infrastructure.
+The application is designed for single-user scenarios with temporary data storage, making it suitable for desktop deployment or small-scale cloud hosting without requiring database infrastructure. Enhanced bulk processing capabilities support enterprise-level email validation tasks with up to 1000 emails per session.
+
+## Recent Changes (July 23, 2025)
+
+### Added Bulk Processing Features
+- **New Bulk Operations Tab**: Dedicated interface for large-scale email processing
+- **Bulk Website Scraping**: Process up to 50 URLs simultaneously with progress tracking
+- **Bulk Email Import**: Support for importing up to 1000 emails via text area or CSV upload
+- **Enhanced Validation**: Batch processing with configurable batch sizes (50-500 emails)
+- **Resume Capability**: Continue validation from interruption points
+- **Validation Modes**: Three modes - Complete (4-stage), Quick (format + DNS), Format only
+- **Advanced Export**: Multiple formats (CSV, Excel, JSON) with filtering and analytics
+- **Performance Optimization**: Reduced rate limiting for bulk operations while maintaining ethical scraping practices
