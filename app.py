@@ -549,7 +549,7 @@ def main():
                     batch_size = st.selectbox(
                         "Batch size:",
                         [50, 100, 200, 500],
-                        value=100,
+                        index=1,
                         help="Process emails in smaller batches to prevent timeouts"
                     )
                 else:
