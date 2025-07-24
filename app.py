@@ -5,7 +5,9 @@ import time
 from email_scraper import EmailScraper
 from email_validator import EmailValidator
 from utils import export_to_csv, rate_limiter
+from database import db_manager, ValidationResult, ScrapingSession, ValidationSession
 import os
+from datetime import datetime, timedelta
 
 # Page configuration
 st.set_page_config(
@@ -14,6 +16,17 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize database
+@st.cache_resource
+def init_database():
+    """Initialize database connection and create tables"""
+    try:
+        db_manager.create_tables()
+        return True
+    except Exception as e:
+        st.error(f"Database initialization failed: {str(e)}")
+        return False
 
 # Initialize session state
 if 'scraped_emails' not in st.session_state:
@@ -24,10 +37,29 @@ if 'scraping_in_progress' not in st.session_state:
     st.session_state.scraping_in_progress = False
 if 'validation_in_progress' not in st.session_state:
     st.session_state.validation_in_progress = False
+if 'current_scraping_session' not in st.session_state:
+    st.session_state.current_scraping_session = None
+if 'current_validation_session' not in st.session_state:
+    st.session_state.current_validation_session = None
+if 'use_database' not in st.session_state:
+    st.session_state.use_database = True
 
 def main():
+    # Initialize database
+    if st.session_state.use_database:
+        db_ready = init_database()
+        if not db_ready:
+            st.error("Database connection failed. Running in session-only mode.")
+            st.session_state.use_database = False
+    
     st.title("📧 Email Scraper & Validator")
     st.write("Extract and validate email addresses from websites with comprehensive verification.")
+    
+    # Database status indicator
+    if st.session_state.use_database:
+        st.success("🗄️ Database connected - Data will be saved persistently")
+    else:
+        st.warning("⚠️ Session-only mode - Data will be lost when you refresh")
     
     # Sidebar for configuration
     with st.sidebar:
@@ -42,9 +74,54 @@ def main():
         st.subheader("Validation Settings")
         enable_smtp_check = st.checkbox("Enable SMTP verification", value=True)
         timeout_seconds = st.slider("Request timeout (seconds)", 5, 30, 10)
+        
+        # Database settings
+        st.subheader("Database Settings")
+        st.session_state.use_database = st.checkbox("Use database storage", value=st.session_state.use_database)
+        
+        if st.session_state.use_database:
+            st.write("📊 **Database Stats**")
+            try:
+                stats = db_manager.get_validation_stats()
+                st.metric("Total Emails", stats['total_emails'])
+                st.metric("Valid Emails", f"{stats['valid_emails']} ({stats['valid_percentage']:.1f}%)")
+            except Exception as e:
+                st.write("Database stats unavailable")
+        
+        # Load from database
+        if st.session_state.use_database and st.button("📥 Load Recent Data"):
+            try:
+                recent_results = db_manager.get_validation_results(limit=1000)
+                if recent_results:
+                    # Convert to format expected by session state
+                    loaded_results = []
+                    loaded_emails = []
+                    
+                    for result in recent_results:
+                        result_dict = {
+                            'email': result.email,
+                            'is_valid': result.is_valid,
+                            'format_valid': result.format_valid,
+                            'blacklist_check': result.blacklist_check,
+                            'dns_valid': result.dns_valid,
+                            'smtp_valid': result.smtp_valid,
+                            'error_message': result.error_message,
+                            'validation_details': result.validation_details or {}
+                        }
+                        loaded_results.append(result_dict)
+                        loaded_emails.append(result.email)
+                    
+                    st.session_state.validated_emails = loaded_results
+                    st.session_state.scraped_emails = loaded_emails
+                    st.success(f"Loaded {len(loaded_results)} validation results from database")
+                    st.rerun()
+                else:
+                    st.info("No data found in database")
+            except Exception as e:
+                st.error(f"Error loading data: {str(e)}")
     
     # Main interface tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🕷️ Email Scraping", "📦 Bulk Operations", "✅ Email Validation", "📊 Results & Export"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🕷️ Email Scraping", "📦 Bulk Operations", "✅ Email Validation", "📊 Results & Export", "🗄️ Database"])
     
     # Email Scraping Tab
     with tab1:
@@ -83,6 +160,32 @@ def main():
                         
                         if emails:
                             st.session_state.scraped_emails = list(set(emails))  # Remove duplicates
+                            
+                            # Save to database if enabled
+                            if st.session_state.use_database:
+                                try:
+                                    # Create scraping session
+                                    scraping_session = db_manager.create_scraping_session(
+                                        urls=[url_input],
+                                        options=scrape_options
+                                    )
+                                    
+                                    # Add emails to database
+                                    db_manager.bulk_add_emails(st.session_state.scraped_emails)
+                                    
+                                    # Update session
+                                    domains = set([email.split('@')[1] for email in st.session_state.scraped_emails if '@' in email])
+                                    db_manager.update_scraping_session(
+                                        scraping_session.id,
+                                        emails_found=len(st.session_state.scraped_emails),
+                                        unique_domains=len(domains),
+                                        status="completed"
+                                    )
+                                    
+                                    st.session_state.current_scraping_session = scraping_session.id
+                                except Exception as e:
+                                    st.warning(f"Database save failed: {str(e)}")
+                            
                             st.success(f"✅ Found {len(st.session_state.scraped_emails)} unique email addresses!")
                             
                             # Display preview
@@ -225,6 +328,32 @@ def main():
                         # Remove duplicates and update session
                         unique_emails = list(set(all_bulk_emails))
                         st.session_state.scraped_emails = unique_emails
+                        
+                        # Save to database if enabled
+                        if st.session_state.use_database and unique_emails:
+                            try:
+                                # Create bulk scraping session
+                                scraping_session = db_manager.create_scraping_session(
+                                    session_name=f"Bulk_Scraping_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                                    urls=url_list,
+                                    options=bulk_scrape_options
+                                )
+                                
+                                # Add emails to database
+                                db_manager.bulk_add_emails(unique_emails)
+                                
+                                # Update session
+                                domains = set([email.split('@')[1] for email in unique_emails if '@' in email])
+                                db_manager.update_scraping_session(
+                                    scraping_session.id,
+                                    emails_found=len(unique_emails),
+                                    unique_domains=len(domains),
+                                    status="completed"
+                                )
+                                
+                                st.session_state.current_scraping_session = scraping_session.id
+                            except Exception as e:
+                                st.warning(f"Database save failed: {str(e)}")
                         
                         st.success(f"✅ Bulk scraping completed! Found {len(unique_emails)} unique emails from {processed_count} websites.")
                         
@@ -533,6 +662,33 @@ def main():
                         # Batch completed message
                         st.info(f"Batch {batch_start//batch_size + 1} completed")
                     
+                    # Save results to database if enabled
+                    if st.session_state.use_database:
+                        try:
+                            # Create validation session if not exists
+                            if not st.session_state.current_validation_session:
+                                validation_session = db_manager.create_validation_session(
+                                    session_name=f"Validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                                    total_emails=len(emails_to_validate),
+                                    validation_mode=validation_mode.lower().replace(' ', '_'),
+                                    batch_size=batch_size
+                                )
+                                st.session_state.current_validation_session = validation_session.id
+                            
+                            # Save validation results in bulk
+                            db_manager.bulk_save_validation_results(validated_results)
+                            
+                            # Update validation session
+                            valid_count = len([r for r in validated_results if r['is_valid']])
+                            db_manager.update_validation_session(
+                                st.session_state.current_validation_session,
+                                processed_emails=len(validated_results),
+                                valid_emails=valid_count,
+                                status="completed"
+                            )
+                        except Exception as e:
+                            st.warning(f"Database save failed: {str(e)}")
+                    
                     # Update session state
                     st.session_state.validated_emails = validated_results
                     
@@ -813,6 +969,301 @@ def main():
         
         else:
             st.info("No validation results available. Please validate some emails first.")
+            
+            # If database is enabled, try to load recent results
+            if st.session_state.use_database:
+                st.write("---")
+                st.subheader("📥 Load from Database")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Load Recent Results"):
+                        try:
+                            recent_results = db_manager.get_validation_results(limit=500)
+                            if recent_results:
+                                # Convert to session format
+                                loaded_results = []
+                                for result in recent_results:
+                                    loaded_results.append({
+                                        'email': result.email,
+                                        'is_valid': result.is_valid,
+                                        'format_valid': result.format_valid,
+                                        'blacklist_check': result.blacklist_check,
+                                        'dns_valid': result.dns_valid,
+                                        'smtp_valid': result.smtp_valid,
+                                        'error_message': result.error_message,
+                                        'validation_details': result.validation_details or {}
+                                    })
+                                
+                                st.session_state.validated_emails = loaded_results
+                                st.success(f"Loaded {len(loaded_results)} results from database")
+                                st.rerun()
+                            else:
+                                st.info("No results found in database")
+                        except Exception as e:
+                            st.error(f"Error loading from database: {str(e)}")
+                
+                with col2:
+                    search_query = st.text_input("Search emails:", placeholder="domain.com or user@domain.com")
+                    if search_query and st.button("Search Database"):
+                        try:
+                            search_results = db_manager.search_emails(search_query, limit=100)
+                            if search_results:
+                                # Convert to session format
+                                loaded_results = []
+                                for result in search_results:
+                                    loaded_results.append({
+                                        'email': result.email,
+                                        'is_valid': result.is_valid,
+                                        'format_valid': result.format_valid,
+                                        'blacklist_check': result.blacklist_check,
+                                        'dns_valid': result.dns_valid,
+                                        'smtp_valid': result.smtp_valid,
+                                        'error_message': result.error_message,
+                                        'validation_details': result.validation_details or {}
+                                    })
+                                
+                                st.session_state.validated_emails = loaded_results
+                                st.success(f"Found {len(loaded_results)} results for '{search_query}'")
+                                st.rerun()
+                            else:
+                                st.info(f"No results found for '{search_query}'")
+                        except Exception as e:
+                            st.error(f"Search error: {str(e)}")
+    
+    # Database Management Tab
+    with tab5:
+        st.header("🗄️ Database Management")
+        
+        if not st.session_state.use_database:
+            st.warning("Database storage is disabled. Enable it in the sidebar to use this tab.")
+            return
+        
+        # Database Statistics
+        st.subheader("📊 Database Statistics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        try:
+            stats = db_manager.get_validation_stats()
+            
+            with col1:
+                st.metric("Total Emails", stats['total_emails'])
+                st.metric("Valid Emails", stats['valid_emails'])
+                st.metric("Success Rate", f"{stats['valid_percentage']:.1f}%")
+            
+            with col2:
+                st.metric("Format Valid", stats['format_valid'])
+                st.metric("DNS Valid", stats['dns_valid'])
+                st.metric("SMTP Valid", stats['smtp_valid'])
+            
+            with col3:
+                # Get recent sessions
+                recent_sessions = db_manager.get_recent_sessions(limit=5)
+                
+                if recent_sessions.get('scraping'):
+                    st.write("**Recent Scraping Sessions**")
+                    for session in recent_sessions['scraping'][:3]:
+                        st.write(f"• {session.session_name}: {session.emails_found} emails")
+                
+                if recent_sessions.get('validation'):
+                    st.write("**Recent Validation Sessions**")
+                    for session in recent_sessions['validation'][:3]:
+                        st.write(f"• {session.session_name}: {session.valid_emails}/{session.total_emails} valid")
+        
+        except Exception as e:
+            st.error(f"Error loading database statistics: {str(e)}")
+        
+        st.divider()
+        
+        # Search and Browse
+        st.subheader("🔍 Search & Browse")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            search_term = st.text_input("Search emails by domain or address:", 
+                                      placeholder="Enter domain.com or specific email")
+            search_limit = st.selectbox("Results limit:", [50, 100, 500, 1000], index=1)
+            
+            if st.button("Search Emails") and search_term:
+                try:
+                    search_results = db_manager.search_emails(search_term, limit=search_limit)
+                    
+                    if search_results:
+                        st.success(f"Found {len(search_results)} results")
+                        
+                        # Convert to DataFrame for display
+                        search_df = pd.DataFrame([{
+                            'Email': result.email,
+                            'Valid': '✅' if result.is_valid else '❌',
+                            'Format': '✅' if result.format_valid else '❌',
+                            'DNS': '✅' if result.dns_valid else '❌',
+                            'SMTP': '✅' if result.smtp_valid else ('❌' if result.smtp_valid is False else '⚠️'),
+                            'Date': result.created_at.strftime('%Y-%m-%d %H:%M')
+                        } for result in search_results])
+                        
+                        st.dataframe(search_df, use_container_width=True)
+                        
+                        # Option to load into session
+                        if st.button("Load Results into Session"):
+                            loaded_results = []
+                            for result in search_results:
+                                loaded_results.append({
+                                    'email': result.email,
+                                    'is_valid': result.is_valid,
+                                    'format_valid': result.format_valid,
+                                    'blacklist_check': result.blacklist_check,
+                                    'dns_valid': result.dns_valid,
+                                    'smtp_valid': result.smtp_valid,
+                                    'error_message': result.error_message,
+                                    'validation_details': result.validation_details or {}
+                                })
+                            
+                            st.session_state.validated_emails = loaded_results
+                            st.session_state.scraped_emails = [r['email'] for r in loaded_results]
+                            st.success("Results loaded into current session!")
+                            st.rerun()
+                    else:
+                        st.info("No results found")
+                        
+                except Exception as e:
+                    st.error(f"Search error: {str(e)}")
+        
+        with col2:
+            st.write("**Filter Options**")
+            filter_valid = st.selectbox("Validation Status:", ["All", "Valid only", "Invalid only"])
+            filter_days = st.selectbox("Time Range:", ["All time", "Last 7 days", "Last 30 days", "Last 90 days"])
+            
+            if st.button("Apply Filters"):
+                try:
+                    # Calculate date filter
+                    date_filter = None
+                    if filter_days != "All time":
+                        days_map = {"Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90}
+                        days = days_map[filter_days]
+                        date_filter = datetime.now() - timedelta(days=days)
+                    
+                    # Apply validation filter
+                    valid_only = None
+                    if filter_valid == "Valid only":
+                        valid_only = True
+                    elif filter_valid == "Invalid only":
+                        valid_only = False
+                    
+                    # Get filtered results
+                    filtered_results = db_manager.get_validation_results(limit=500, valid_only=valid_only)
+                    
+                    # Apply date filter if needed
+                    if date_filter:
+                        filtered_results = [r for r in filtered_results if r.created_at >= date_filter]
+                    
+                    if filtered_results:
+                        st.success(f"Found {len(filtered_results)} filtered results")
+                        
+                        # Display summary
+                        valid_count = len([r for r in filtered_results if r.is_valid])
+                        st.write(f"Valid: {valid_count}/{len(filtered_results)} ({valid_count/len(filtered_results)*100:.1f}%)")
+                        
+                        # Option to load into session
+                        if st.button("Load Filtered Results", key="load_filtered"):
+                            loaded_results = []
+                            for result in filtered_results:
+                                loaded_results.append({
+                                    'email': result.email,
+                                    'is_valid': result.is_valid,
+                                    'format_valid': result.format_valid,
+                                    'blacklist_check': result.blacklist_check,
+                                    'dns_valid': result.dns_valid,
+                                    'smtp_valid': result.smtp_valid,
+                                    'error_message': result.error_message,
+                                    'validation_details': result.validation_details or {}
+                                })
+                            
+                            st.session_state.validated_emails = loaded_results
+                            st.session_state.scraped_emails = [r['email'] for r in loaded_results]
+                            st.success("Filtered results loaded into current session!")
+                            st.rerun()
+                    else:
+                        st.info("No results match the selected filters")
+                        
+                except Exception as e:
+                    st.error(f"Filter error: {str(e)}")
+        
+        st.divider()
+        
+        # Database Maintenance
+        st.subheader("🔧 Database Maintenance")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.write("**Data Cleanup**")
+            cleanup_days = st.number_input("Delete data older than (days):", min_value=1, max_value=365, value=30)
+            
+            if st.button("🗑️ Cleanup Old Data", type="secondary"):
+                if st.button("Confirm Cleanup", key="confirm_cleanup"):
+                    try:
+                        result = db_manager.cleanup_old_data(days=cleanup_days)
+                        st.success(f"Cleanup completed:")
+                        st.write(f"- Validation results: {result['validation_results_deleted']}")
+                        st.write(f"- Scraping sessions: {result['scraping_sessions_deleted']}")
+                        st.write(f"- Validation sessions: {result['validation_sessions_deleted']}")
+                    except Exception as e:
+                        st.error(f"Cleanup error: {str(e)}")
+        
+        with col2:
+            st.write("**Export Database**")
+            if st.button("📥 Export All Data"):
+                try:
+                    all_results = db_manager.get_validation_results(limit=None)
+                    if all_results:
+                        # Convert to export format
+                        export_data = []
+                        for result in all_results:
+                            export_data.append({
+                                'email': result.email,
+                                'is_valid': result.is_valid,
+                                'format_valid': result.format_valid,
+                                'blacklist_check': result.blacklist_check,
+                                'dns_valid': result.dns_valid,
+                                'smtp_valid': result.smtp_valid,
+                                'error_message': result.error_message,
+                                'validation_mode': result.validation_mode,
+                                'created_at': result.created_at.isoformat()
+                            })
+                        
+                        # Create CSV
+                        export_df = pd.DataFrame(export_data)
+                        csv_data = export_df.to_csv(index=False)
+                        
+                        st.download_button(
+                            label="Download Database Export",
+                            data=csv_data,
+                            file_name=f"database_export_{int(time.time())}.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("No data to export")
+                except Exception as e:
+                    st.error(f"Export error: {str(e)}")
+        
+        with col3:
+            st.write("**Database Info**")
+            try:
+                # Check database connection
+                test_session = db_manager.get_session()
+                test_session.close()
+                st.success("✅ Database connected")
+                
+                # Show database URL (masked)
+                db_url = os.getenv('DATABASE_URL', '')
+                if db_url:
+                    masked_url = db_url[:20] + "..." + db_url[-10:] if len(db_url) > 30 else db_url
+                    st.write(f"URL: {masked_url}")
+                
+            except Exception as e:
+                st.error(f"Database connection issue: {str(e)}")
 
 if __name__ == "__main__":
     main()

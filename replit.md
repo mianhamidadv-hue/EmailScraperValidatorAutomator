@@ -14,15 +14,17 @@ The application follows a modular architecture with clear separation of concerns
 
 ### Frontend Architecture
 - **Streamlit-based UI**: Web interface built with Streamlit providing an interactive dashboard
-- **Multi-tab interface**: Organized into four main sections - Email Scraping, Bulk Operations, Email Validation, and Results & Export
+- **Multi-tab interface**: Organized into five main sections - Email Scraping, Bulk Operations, Email Validation, Results & Export, and Database Management
 - **Real-time feedback**: Progress indicators, batch processing updates, and session state management for user interaction
-- **Sidebar configuration**: Centralized settings panel for rate limiting and validation options
+- **Sidebar configuration**: Centralized settings panel for rate limiting, validation options, and database settings
 - **Bulk processing interface**: Dedicated tab for handling large-scale operations with progress tracking
+- **Database management**: Advanced interface for searching, filtering, and managing stored data
 
 ### Backend Architecture
 - **Modular Python components**: Separate classes for scraping (`EmailScraper`) and validation (`EmailValidator`)
-- **Session-based state management**: Streamlit session state for maintaining data across user interactions
-- **Utility functions**: Helper functions for data export and rate limiting
+- **Database layer**: PostgreSQL database with SQLAlchemy ORM for persistent data storage
+- **Session management**: Both Streamlit session state and database session tracking
+- **Utility functions**: Helper functions for data export, rate limiting, and database operations
 
 ## Key Components
 
@@ -49,11 +51,18 @@ The application follows a modular architecture with clear separation of concerns
 - **Rate Limiting**: Decorator for controlling request frequency
 
 ### 4. Main Application (app.py)
-- **Streamlit interface**: Four-tab UI with configuration sidebar
-- **Session state management**: Persistent data storage across user sessions
+- **Streamlit interface**: Five-tab UI with configuration sidebar
+- **Hybrid storage**: Both session state and database persistence
 - **Progress tracking**: Real-time status updates during scraping/validation operations
 - **Bulk processing**: Support for processing up to 1000 emails with batch management
 - **Advanced export**: Multiple export formats (CSV, Excel, JSON) with filtering options
+
+### 5. Database Layer (database.py)
+- **PostgreSQL integration**: Full database schema with tables for emails, validation results, and sessions
+- **SQLAlchemy ORM**: Object-relational mapping for type-safe database operations
+- **Bulk operations**: Efficient batch processing for large datasets
+- **Data integrity**: Foreign key relationships and transaction management
+- **Search capabilities**: Advanced search and filtering across all stored data
 
 ## Data Flow
 
@@ -75,18 +84,21 @@ The application follows a modular architecture with clear separation of concerns
 - **pandas**: Data manipulation and analysis
 - **dnspython**: DNS resolution for MX record validation
 - **openpyxl**: Excel file generation for advanced export options
+- **SQLAlchemy**: Database ORM and connection management
+- **psycopg2-binary**: PostgreSQL database adapter
 
 ### Network Services
 - **DNS Servers**: For MX record validation
 - **SMTP Servers**: For optional email deliverability testing
 - **Target Websites**: External websites being scraped for email addresses
+- **PostgreSQL Database**: Cloud-hosted database for persistent storage
 
 ## Deployment Strategy
 
 ### Current Setup
-- **Local Development**: Designed to run locally using Streamlit's development server
-- **File-based Storage**: Uses Streamlit session state for temporary data storage
-- **No Database**: Currently operates without persistent data storage
+- **Cloud-ready**: Designed to run on Replit with PostgreSQL database integration
+- **Hybrid Storage**: Streamlit session state for UI responsiveness plus database for persistence
+- **PostgreSQL Database**: Full database schema with relational tables and advanced querying
 
 ### Architecture Decisions
 
@@ -108,11 +120,11 @@ The application follows a modular architecture with clear separation of concerns
    - **Pros**: High accuracy, configurable depth
    - **Cons**: Slower processing, potential for false negatives
 
-4. **Session State Storage**:
-   - **Problem**: Need to maintain data across user interactions
-   - **Solution**: Streamlit session state for temporary storage
-   - **Pros**: Simple implementation, no database setup required
-   - **Cons**: Data lost on session end, no persistence across deployments
+4. **Hybrid Storage Architecture**:
+   - **Problem**: Need both responsive UI and persistent data storage
+   - **Solution**: Streamlit session state + PostgreSQL database
+   - **Pros**: Fast UI responsiveness, persistent storage, data recovery, advanced search
+   - **Cons**: Increased complexity, database dependency
 
 5. **Rate Limiting Implementation**:
    - **Problem**: Need to respect target websites and avoid blocking
@@ -120,11 +132,21 @@ The application follows a modular architecture with clear separation of concerns
    - **Pros**: Ethical scraping, reduced server load
    - **Cons**: Slower data collection
 
-The application is designed for single-user scenarios with temporary data storage, making it suitable for desktop deployment or small-scale cloud hosting without requiring database infrastructure. Enhanced bulk processing capabilities support enterprise-level email validation tasks with up to 1000 emails per session.
+The application is designed for both individual users and enterprise scenarios with full database persistence, making it suitable for cloud deployment with PostgreSQL infrastructure. Enhanced bulk processing capabilities support enterprise-level email validation tasks with up to 1000 emails per session, with all data saved persistently for future reference and analysis.
 
-## Recent Changes (July 23, 2025)
+## Recent Changes (July 24, 2025)
 
-### Added Bulk Processing Features
+### Added Database Support (PostgreSQL)
+- **Persistent Data Storage**: All scraped emails and validation results now saved to PostgreSQL database
+- **Database Management Tab**: New dedicated interface for database operations
+- **Session Tracking**: Automatic tracking of scraping and validation sessions with metadata
+- **Advanced Search**: Search emails by domain or address across all historical data
+- **Data Recovery**: Load previous results and continue interrupted validation sessions
+- **Database Analytics**: Comprehensive statistics and analytics dashboard
+- **Data Export**: Full database export capabilities with filtering options
+- **Database Maintenance**: Built-in cleanup tools and connection monitoring
+
+### Enhanced Bulk Processing Features
 - **New Bulk Operations Tab**: Dedicated interface for large-scale email processing
 - **Bulk Website Scraping**: Process up to 50 URLs simultaneously with progress tracking
 - **Bulk Email Import**: Support for importing up to 1000 emails via text area or CSV upload
