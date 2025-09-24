@@ -5,7 +5,10 @@ import time
 from email_scraper import EmailScraper
 from email_validator import EmailValidator
 from utils import export_to_csv, rate_limiter
+from sendgrid_client import EmailCampaignManager, AutoReplyManager
+from email_templates import EmailTemplates
 import os
+import json
 
 # Page configuration
 st.set_page_config(
@@ -24,6 +27,12 @@ if 'scraping_in_progress' not in st.session_state:
     st.session_state.scraping_in_progress = False
 if 'validation_in_progress' not in st.session_state:
     st.session_state.validation_in_progress = False
+if 'campaign_history' not in st.session_state:
+    st.session_state.campaign_history = []
+if 'scheduled_followups' not in st.session_state:
+    st.session_state.scheduled_followups = {}
+if 'email_templates' not in st.session_state:
+    st.session_state.email_templates = EmailTemplates.get_all_templates()
 
 def main():
     st.title("📧 Email Scraper & Validator")
@@ -44,7 +53,7 @@ def main():
         timeout_seconds = st.slider("Request timeout (seconds)", 5, 30, 10)
     
     # Main interface tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🕷️ Email Scraping", "📦 Bulk Operations", "✅ Email Validation", "📊 Results & Export"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🕷️ Email Scraping", "📦 Bulk Operations", "✅ Email Validation", "📊 Results & Export", "📬 Email Campaigns"])
     
     # Email Scraping Tab
     with tab1:
@@ -813,6 +822,344 @@ def main():
         
         else:
             st.info("No validation results available. Please validate some emails first.")
+    
+    # Email Campaigns Tab
+    with tab5:
+        st.header("📧 Email Campaign Manager")
+        
+        # Check if SendGrid API key is configured
+        sendgrid_configured = os.environ.get('SENDGRID_API_KEY') is not None
+        
+        if not sendgrid_configured:
+            st.warning("⚠️ SendGrid API Key not configured. Please set up your SendGrid API key to use email campaigns.")
+            with st.expander("How to set up SendGrid API Key"):
+                st.markdown("""
+                1. Sign up for a SendGrid account at https://sendgrid.com
+                2. Create an API Key in your SendGrid dashboard
+                3. Add the API key to your environment variables as `SENDGRID_API_KEY`
+                """)
+            
+            # Still allow template creation and viewing
+            st.subheader("📝 Email Template Manager")
+            
+            template_action = st.radio(
+                "Choose action:",
+                ["View Templates", "Create Custom Template"],
+                horizontal=True
+            )
+            
+            if template_action == "View Templates":
+                template_names = list(st.session_state.email_templates.keys())
+                if template_names:
+                    selected_template = st.selectbox("Select template to view:", template_names)
+                    template = st.session_state.email_templates[selected_template]
+                    
+                    st.subheader(f"Template: {template['name']}")
+                    st.write(f"**Subject:** {template['subject']}")
+                    
+                    with st.expander("HTML Content"):
+                        st.code(template['html_content'], language='html')
+                    
+                    with st.expander("Text Content"):
+                        st.text(template.get('text_content', 'No text content available'))
+            
+            elif template_action == "Create Custom Template":
+                with st.form("custom_template_form"):
+                    template_name = st.text_input("Template Name:")
+                    template_subject = st.text_input("Subject Line:")
+                    template_html = st.text_area("HTML Content:", height=300)
+                    template_text = st.text_area("Text Content (optional):", height=150)
+                    
+                    if st.form_submit_button("Save Template"):
+                        if template_name and template_subject and template_html:
+                            custom_template = {
+                                "name": template_name,
+                                "subject": template_subject,
+                                "html_content": template_html,
+                                "text_content": template_text
+                            }
+                            st.session_state.email_templates[template_name.lower().replace(' ', '_')] = custom_template
+                            st.success(f"Template '{template_name}' saved successfully!")
+                        else:
+                            st.error("Please fill in all required fields (Name, Subject, HTML Content)")
+        
+        else:
+            # Full campaign functionality when SendGrid is configured
+            st.success("✅ SendGrid API configured - Full campaign functionality available")
+            
+            campaign_tab1, campaign_tab2, campaign_tab3 = st.tabs(["🚀 Create Campaign", "📋 Templates", "📊 Campaign History"])
+            
+            with campaign_tab1:
+                st.subheader("Create Email Campaign")
+                
+                if not st.session_state.scraped_emails and not st.session_state.validated_emails:
+                    st.info("No email recipients available. Please scrape and validate emails first, or upload a recipient list.")
+                    
+                    # File upload for recipients
+                    uploaded_recipients = st.file_uploader(
+                        "Upload recipient list (CSV):",
+                        type=['csv'],
+                        help="CSV file should have an 'email' column"
+                    )
+                    
+                    if uploaded_recipients:
+                        try:
+                            df_recipients = pd.read_csv(uploaded_recipients)
+                            if 'email' in df_recipients.columns:
+                                recipient_emails = df_recipients['email'].dropna().tolist()
+                                st.success(f"Loaded {len(recipient_emails)} recipients from file!")
+                                st.session_state.scraped_emails = recipient_emails
+                            else:
+                                st.error("CSV file must contain an 'email' column.")
+                        except Exception as e:
+                            st.error(f"Error reading file: {str(e)}")
+                
+                if st.session_state.scraped_emails or st.session_state.validated_emails:
+                    # Campaign configuration
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        # Recipient selection
+                        recipient_source = st.radio(
+                            "Use recipients from:",
+                            ["All scraped emails", "Validated emails only", "Custom selection"],
+                            horizontal=True
+                        )
+                        
+                        if recipient_source == "All scraped emails":
+                            recipients = st.session_state.scraped_emails
+                        elif recipient_source == "Validated emails only":
+                            if st.session_state.validated_emails:
+                                recipients = [r['email'] for r in st.session_state.validated_emails if r['is_valid']]
+                            else:
+                                recipients = []
+                                st.warning("No validated emails available.")
+                        else:
+                            # Custom selection
+                            all_available = list(set(st.session_state.scraped_emails + [r['email'] for r in st.session_state.validated_emails]))
+                            recipients = st.multiselect("Select recipients:", all_available)
+                        
+                        # Campaign details
+                        from_email = st.text_input(
+                            "From Email:",
+                            placeholder="your-email@yourdomain.com",
+                            help="Your verified sender email address"
+                        )
+                        
+                        # Template selection
+                        template_choice = st.radio(
+                            "Choose template source:",
+                            ["Pre-built template", "Custom template", "Write from scratch"],
+                            horizontal=True
+                        )
+                        
+                        if template_choice == "Pre-built template":
+                            template_names = list(st.session_state.email_templates.keys())
+                            selected_template_key = st.selectbox("Select template:", template_names)
+                            selected_template = st.session_state.email_templates[selected_template_key]
+                            
+                            campaign_subject = st.text_input("Subject:", value=selected_template['subject'])
+                            
+                            # Show template preview
+                            with st.expander("Template Preview", expanded=False):
+                                st.write("**Subject:** " + selected_template['subject'])
+                                st.write("**HTML Content:**")
+                                st.markdown(selected_template['html_content'][:500] + "..." if len(selected_template['html_content']) > 500 else selected_template['html_content'])
+                            
+                            campaign_html = selected_template['html_content']
+                            campaign_text = selected_template.get('text_content', '')
+                            
+                        elif template_choice == "Custom template":
+                            custom_template_names = [k for k in st.session_state.email_templates.keys() if not k in ['guest_post', 'collaboration', 'press_inquiry', 'follow_up']]
+                            if custom_template_names:
+                                selected_custom = st.selectbox("Select custom template:", custom_template_names)
+                                custom_template = st.session_state.email_templates[selected_custom]
+                                campaign_subject = st.text_input("Subject:", value=custom_template['subject'])
+                                campaign_html = custom_template['html_content']
+                                campaign_text = custom_template.get('text_content', '')
+                            else:
+                                st.info("No custom templates available. Create one in the Templates tab.")
+                                campaign_subject = st.text_input("Subject:")
+                                campaign_html = st.text_area("HTML Content:", height=300)
+                                campaign_text = st.text_area("Text Content:", height=150)
+                        
+                        else:
+                            # Write from scratch
+                            campaign_subject = st.text_input("Subject:")
+                            campaign_html = st.text_area("HTML Content:", height=300)
+                            campaign_text = st.text_area("Text Content (optional):", height=150)
+                    
+                    with col2:
+                        st.write("**Campaign Summary**")
+                        if recipients:
+                            st.metric("Recipients", len(recipients))
+                            
+                            # Estimate sending time
+                            est_time_minutes = len(recipients) * 1 / 60  # 1 second per email
+                            if est_time_minutes < 1:
+                                st.metric("Est. Send Time", f"{len(recipients)} seconds")
+                            else:
+                                st.metric("Est. Send Time", f"{est_time_minutes:.1f} minutes")
+                        
+                        # Campaign options
+                        st.write("**Campaign Options**")
+                        delay_between_emails = st.slider("Delay between emails (seconds):", 1, 10, 2)
+                        
+                        # Follow-up options
+                        setup_followup = st.checkbox("Setup automatic follow-up")
+                        if setup_followup:
+                            followup_days = st.number_input("Follow-up after (days):", min_value=1, max_value=30, value=7)
+                            followup_subject = st.text_input("Follow-up subject:", placeholder="Following up on...")
+                    
+                    # Campaign launch
+                    if st.button("🚀 Launch Campaign", type="primary"):
+                        if not from_email:
+                            st.error("Please enter a 'From' email address.")
+                        elif not campaign_subject:
+                            st.error("Please enter a subject line.")
+                        elif not campaign_html and not campaign_text:
+                            st.error("Please provide email content (HTML or text).")
+                        elif not recipients:
+                            st.error("Please select recipients for the campaign.")
+                        else:
+                            try:
+                                # Initialize campaign manager
+                                campaign_manager = EmailCampaignManager()
+                                
+                                # Progress tracking
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+                                results_container = st.empty()
+                                
+                                with st.spinner("Launching email campaign..."):
+                                    # Send campaign
+                                    results = campaign_manager.send_bulk_campaign(
+                                        recipients=recipients,
+                                        from_email=from_email,
+                                        subject=campaign_subject,
+                                        html_content=campaign_html if campaign_html else None,
+                                        text_content=campaign_text if campaign_text else None,
+                                        delay_seconds=delay_between_emails
+                                    )
+                                
+                                # Store campaign results
+                                campaign_record = {
+                                    "campaign_id": results["campaign_id"],
+                                    "timestamp": time.time(),
+                                    "subject": campaign_subject,
+                                    "from_email": from_email,
+                                    "total_recipients": len(recipients),
+                                    "total_sent": results["total_sent"],
+                                    "total_failed": results["total_failed"],
+                                    "successful_sends": results["successful_sends"],
+                                    "failed_sends": results["failed_sends"]
+                                }
+                                
+                                st.session_state.campaign_history.append(campaign_record)
+                                
+                                # Show results
+                                st.success(f"Campaign completed! Sent {results['total_sent']} emails successfully.")
+                                if results["total_failed"] > 0:
+                                    st.warning(f"Failed to send {results['total_failed']} emails.")
+                                
+                                # Setup follow-up if requested
+                                if setup_followup and followup_subject:
+                                    auto_reply = AutoReplyManager(campaign_manager)
+                                    followup_id = auto_reply.schedule_followup(
+                                        original_recipients=results["successful_sends"],
+                                        from_email=from_email,
+                                        followup_subject=followup_subject,
+                                        followup_content=f"<p>Following up on my previous email about {campaign_subject}</p>",
+                                        days_delay=followup_days
+                                    )
+                                    st.session_state.scheduled_followups[followup_id] = auto_reply.followup_schedules[followup_id]
+                                    st.info(f"Follow-up scheduled for {followup_days} days from now.")
+                                
+                                progress_bar.empty()
+                                status_text.empty()
+                                
+                            except Exception as e:
+                                st.error(f"Campaign failed: {str(e)}")
+            
+            with campaign_tab2:
+                st.subheader("Email Templates")
+                
+                template_action = st.radio(
+                    "Choose action:",
+                    ["View All Templates", "Create New Template", "Edit Template"],
+                    horizontal=True
+                )
+                
+                if template_action == "View All Templates":
+                    for template_key, template in st.session_state.email_templates.items():
+                        with st.expander(f"📧 {template['name']}"):
+                            st.write(f"**Subject:** {template['subject']}")
+                            st.markdown("**HTML Preview:**")
+                            st.code(template['html_content'][:300] + "..." if len(template['html_content']) > 300 else template['html_content'], language='html')
+                
+                elif template_action == "Create New Template":
+                    with st.form("new_template_form"):
+                        st.write("Create a new email template:")
+                        template_name = st.text_input("Template Name:")
+                        template_subject = st.text_input("Subject Line:")
+                        template_html = st.text_area("HTML Content:", height=400)
+                        template_text = st.text_area("Text Content (optional):", height=200)
+                        
+                        if st.form_submit_button("Create Template"):
+                            if template_name and template_subject and template_html:
+                                template_key = template_name.lower().replace(' ', '_')
+                                new_template = {
+                                    "name": template_name,
+                                    "subject": template_subject,
+                                    "html_content": template_html,
+                                    "text_content": template_text
+                                }
+                                st.session_state.email_templates[template_key] = new_template
+                                st.success(f"Template '{template_name}' created successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Please fill in all required fields.")
+            
+            with campaign_tab3:
+                st.subheader("Campaign History & Analytics")
+                
+                if st.session_state.campaign_history:
+                    for i, campaign in enumerate(reversed(st.session_state.campaign_history)):
+                        with st.expander(f"Campaign: {campaign['subject']} - {time.strftime('%Y-%m-%d %H:%M', time.localtime(campaign['timestamp']))}"):
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric("Total Recipients", campaign['total_recipients'])
+                                st.metric("Successfully Sent", campaign['total_sent'])
+                            
+                            with col2:
+                                st.metric("Failed Sends", campaign['total_failed'])
+                                success_rate = (campaign['total_sent'] / campaign['total_recipients']) * 100 if campaign['total_recipients'] > 0 else 0
+                                st.metric("Success Rate", f"{success_rate:.1f}%")
+                            
+                            with col3:
+                                st.write("**Campaign Details:**")
+                                st.write(f"From: {campaign['from_email']}")
+                                st.write(f"Campaign ID: {campaign['campaign_id']}")
+                            
+                            if campaign['failed_sends']:
+                                with st.expander("Failed Sends Details"):
+                                    for failed in campaign['failed_sends']:
+                                        st.write(f"❌ {failed['email']}: {failed['error']}")
+                
+                else:
+                    st.info("No campaign history available. Launch your first campaign to see results here.")
+                
+                # Scheduled follow-ups
+                if st.session_state.scheduled_followups:
+                    st.subheader("Scheduled Follow-ups")
+                    for followup_id, followup_data in st.session_state.scheduled_followups.items():
+                        scheduled_time = time.strftime('%Y-%m-%d %H:%M', time.localtime(followup_data['scheduled_for']))
+                        status = followup_data['status']
+                        
+                        st.write(f"**Follow-up:** {followup_data['subject']}")
+                        st.write(f"Status: {status.title()} | Scheduled: {scheduled_time}")
+                        st.write(f"Recipients: {len(followup_data['recipients'])}")
 
 if __name__ == "__main__":
     main()

@@ -33,23 +33,95 @@ class EmailScraper:
             '/staff', '/directory', '/people', '/leadership'
         ]
     
-    def extract_emails_from_text(self, text: str) -> Set[str]:
-        """Extract email addresses from text using regex."""
+    def is_contact_email(self, email: str, context: str) -> bool:
+        """Determine if an email is likely a contact/editorial/business email based on context."""
+        email_lower = email.lower()
+        context_lower = context.lower()
+        
+        # Skip obvious non-contact emails
+        skip_patterns = [
+            'unsubscribe@', 'noreply@', 'no-reply@', 'donotreply@', 'bounce@',
+            'newsletter@', 'updates@', 'notifications@', 'alerts@',
+            'privacy@', 'legal@', 'abuse@', 'postmaster@', 'webmaster@',
+            'user@', 'member@', 'customer@', 'client@', 'account@',
+            'billing@', 'payment@', 'orders@', 'shipping@', 'tracking@'
+        ]
+        
+        if any(pattern in email_lower for pattern in skip_patterns):
+            return False
+        
+        # Look for contact-related keywords in email address
+        contact_email_keywords = [
+            'contact', 'info', 'hello', 'hi', 'editor', 'editorial',
+            'press', 'media', 'news', 'pr@', 'publicrelations',
+            'advertising', 'ads@', 'marketing', 'business', 'sales',
+            'partnerships', 'collaborate', 'guest', 'write', 'author',
+            'submit', 'pitch', 'story', 'article', 'content',
+            'inquiry', 'inquiries', 'general', 'main@', 'office@'
+        ]
+        
+        if any(keyword in email_lower for keyword in contact_email_keywords):
+            return True
+        
+        # Look for context clues around the email
+        contact_context_keywords = [
+            'contact us', 'get in touch', 'reach out', 'write for us',
+            'write to us', 'send us', 'email us', 'contact form',
+            'editorial team', 'editor', 'editorial', 'newsroom',
+            'press inquiries', 'media contact', 'media kit',
+            'advertising', 'advertise', 'sponsor', 'partnership',
+            'collaborate', 'guest post', 'guest author', 'contributor',
+            'submit', 'pitch', 'story idea', 'news tip',
+            'business inquiries', 'business contact', 'general inquiries',
+            'customer service', 'support', 'help', 'questions',
+            'feedback', 'suggestions', 'complaints'
+        ]
+        
+        # Check if email appears near contact-related text
+        email_pos = context_lower.find(email_lower)
+        if email_pos != -1:
+            # Check 200 characters before and after the email
+            start_pos = max(0, email_pos - 200)
+            end_pos = min(len(context_lower), email_pos + len(email_lower) + 200)
+            surrounding_text = context_lower[start_pos:end_pos]
+            
+            if any(keyword in surrounding_text for keyword in contact_context_keywords):
+                return True
+        
+        # Check if email is in footer, header, or contact section
+        if any(section in context_lower for section in [
+            '<footer', 'class="footer', 'id="footer', 'footer-',
+            '<header', 'class="header', 'id="header', 'header-',
+            'class="contact', 'id="contact', 'contact-',
+            'class="about', 'id="about', 'about-'
+        ]):
+            return True
+        
+        return False
+    
+    def extract_emails_from_text(self, text: str, html_context: str = "") -> Set[str]:
+        """Extract contact-related email addresses from text using context-aware filtering."""
         if not text:
             return set()
         
         emails = set(self.email_pattern.findall(text))
         
-        # Filter out common false positives
+        # Filter out common false positives and non-contact emails
         filtered_emails = set()
         for email in emails:
             email_lower = email.lower()
-            # Skip common placeholder emails
-            if not any(placeholder in email_lower for placeholder in [
+            
+            # Skip obvious placeholder emails
+            if any(placeholder in email_lower for placeholder in [
                 'example.com', 'test.com', 'domain.com', 'yoursite.com',
-                'yourdomain.com', 'email.com', 'mail.com', 'noreply@',
-                'no-reply@', 'admin@localhost', '.png', '.jpg', '.gif'
+                'yourdomain.com', 'email.com', 'mail.com', 
+                '.png', '.jpg', '.gif', '.pdf', '.doc'
             ]):
+                continue
+            
+            # Use context-aware filtering to identify contact emails
+            combined_context = f"{text} {html_context}"
+            if self.is_contact_email(email, combined_context):
                 filtered_emails.add(email)
         
         return filtered_emails
@@ -162,9 +234,9 @@ class EmailScraper:
                 html_content, text_content = self.get_page_content(url)
                 
                 if html_content:
-                    # Extract emails from both HTML and text content
-                    emails_from_html = self.extract_emails_from_text(html_content)
-                    emails_from_text = self.extract_emails_from_text(text_content)
+                    # Extract contact emails from both HTML and text content with context
+                    emails_from_html = self.extract_emails_from_text(html_content, html_content)
+                    emails_from_text = self.extract_emails_from_text(text_content, html_content)
                     all_emails.update(emails_from_html)
                     all_emails.update(emails_from_text)
                     
@@ -181,8 +253,8 @@ class EmailScraper:
                                 
                                 contact_html, contact_text = self.get_page_content(contact_url)
                                 if contact_html:
-                                    contact_emails_html = self.extract_emails_from_text(contact_html)
-                                    contact_emails_text = self.extract_emails_from_text(contact_text)
+                                    contact_emails_html = self.extract_emails_from_text(contact_html, contact_html)
+                                    contact_emails_text = self.extract_emails_from_text(contact_text, contact_html)
                                     all_emails.update(contact_emails_html)
                                     all_emails.update(contact_emails_text)
                                     
@@ -199,8 +271,8 @@ class EmailScraper:
                                 
                                 social_html, social_text = self.get_page_content(social_url)
                                 if social_html:
-                                    social_emails_html = self.extract_emails_from_text(social_html)
-                                    social_emails_text = self.extract_emails_from_text(social_text)
+                                    social_emails_html = self.extract_emails_from_text(social_html, social_html)
+                                    social_emails_text = self.extract_emails_from_text(social_text, social_html)
                                     all_emails.update(social_emails_html)
                                     all_emails.update(social_emails_text)
                                 
@@ -214,7 +286,8 @@ class EmailScraper:
                         
                         for element in footer_elements:
                             footer_text = element.get_text() if element else ""
-                            footer_emails = self.extract_emails_from_text(footer_text)
+                            footer_html = str(element) if element else ""
+                            footer_emails = self.extract_emails_from_text(footer_text, footer_html)
                             all_emails.update(footer_emails)
             
         except Exception as e:
@@ -243,7 +316,7 @@ class EmailScraper:
                 # Check form action URL
                 action = form.get('action', '')
                 if action:
-                    form_emails = self.extract_emails_from_text(action)
+                    form_emails = self.extract_emails_from_text(action, str(form))
                     emails.update(form_emails)
                 
                 # Check hidden input fields
@@ -251,12 +324,12 @@ class EmailScraper:
                 for inp in hidden_inputs:
                     value = inp.get('value', '')
                     if value:
-                        hidden_emails = self.extract_emails_from_text(value)
+                        hidden_emails = self.extract_emails_from_text(value, str(form))
                         emails.update(hidden_emails)
                 
                 # Check form labels and text
                 form_text = form.get_text()
-                form_emails = self.extract_emails_from_text(form_text)
+                form_emails = self.extract_emails_from_text(form_text, str(form))
                 emails.update(form_emails)
                 
         except Exception as e:
